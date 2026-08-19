@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TerritoryTitans.io</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0d0d1a;
+            font-family: 'Cinzel', serif;
+        }
+        canvas {
+            display: block;
+        }
+        #lobby {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+        }
+        #nameInput, #joinButton {
+            color: gold;
+            background: transparent;
+            border: 2px solid gold;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+            width: 80%;
+        }
+        #globalLeaderboard {
+            margin-top: 20px;
+            color: white;
+        }
+        #deathScreen, #countdown {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+        }
+        #deathScreen h1, #countdown h1 {
+            font-size: 3em;
+        }
+        #respawnBtn, #lobbyBtn {
+            color: gold;
+            background: transparent;
+            border: 2px solid gold;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+        }
+        #hud #health, #hud #xp {
+            background: darkred;
+            height: 16px;
+            width: 200px;
+        }
+        #hud #health span, #hud #xp span {
+            display: block;
+            background: green;
+            height: 100%;
+        }
+        #timer, #ping {
+            position: absolute;
+            color: white;
+            font-size: 20px;
+        }
+        #timer {
+            top: 10px;
+            right: 10px;
+        }
+        #ping {
+            top: 40px;
+            right: 10px;
+        }
+        #leaderboard {
+            position: absolute;
+            top: 10px;
+            right: 150px;
+            width: 150px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div style="position:fixed;top:0;left:0;right:0;background:#ff6b35;color:white;text-align:center;padding:6px;font-size:13px;z-index:9999;">🎮 Demo client — deploy server.js on Railway/Render for full multiplayer. <a href="https://github.com/caytec/territorytitans-io-v0.1" style="color:white">Get server code →</a></div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="lobby">
+        <h1>Territory Titans</h1>
+        <input id="nameInput" type="text" placeholder="Enter your name">
+        <button id="joinButton">Join Battle</button>
+        <div id="globalLeaderboard"></div>
+    </div>
+    <div id="deathScreen">
+        <h1>YOU DIED</h1>
+        <p id="finalScoreText"></p>
+        <p id="bestScoreText"></p>
+        <button id="respawnBtn">Respawn</button>
+        <button id="lobbyBtn">Return to Lobby</button>
+    </div>
+    <div id="countdown">
+        <h1 id="countdownText"></h1>
+    </div>
+    <div id="hud">
+        <div id="health"><span></span></div>
+        <div id="xp"><span></span></div>
+    </div>
+    <div id="timer"></div>
+    <div id="ping"></div>
+    <div id="leaderboard"></div>
+    <script>
+        let gameState = 'lobby';
+        let SERVER_URL = window.location.hostname === 'localhost' ? 'http://localhost:3000' : '';
+        let socket = io(SERVER_URL);
+        let playerId = null;
+        let roomId = null;
+        let playerProfile = { level: 1, xp: 0, allTimeScore: 0 };
+        let predictedX = 1500;
+        let predictedY = 1500;
+        let playerHp = 100;
+        let playerMaxHp = 100;
+        let playerScore = 0;
+        let playerXp = 0;
+        let playerLevel = 1;
+        let ping = 0;
+        let pingStart = 0;
+        let gameTimer = 600;
+        let leaderboard = [];
+        let particles = [];
+        const SPEED = 4;
+        const WORLD_W = 3000;
+        const WORLD_H = 3000;
+        let remoteEntities = new Map();
+        let serverPlayers = [];
+        let serverBots = [];
+        let serverCollectibles = [];
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = Math.random() * 6 - 3;
+                this.vy = Math.random() * 6 - 3;
+                this.life = 60;
+                this.maxLife = 60;
+                this.color = color;
+                this.size = Math.random() * 4 + 2;
+            }
+        }
+
+        function spawnParticles(x, y, color, count) {
+            for (let i = 0; i < count; i++) {
+                particles.push(new Particle(x, y, color));
+            }
+        }
+
+        function updateParticles() {
+            particles.forEach((particle, index) => {
+                particle.life--;
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                particle.vx *= 0.95;
+                particle.vy *= 0.95;
+                if (particle.life < 1) {
+                    particles.splice(index, 1);
+                }
+            });
+        }
+
+        function drawParticles(cam) {
+            particles.forEach(particle => {
+                const alpha = particle.life / particle.maxLife;
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = particle.color;
+                ctx.beginPath();
+                ctx.arc(particle.x - cam.x, particle.y - cam.y, particle.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1; // Reset global alpha
+            });
+        }
+
+        let cam = { x: 0, y: 0 };
+
+        function updateCamera() {
+            cam.x = Math.max(0, Math.min(WORLD_W - canvas.width, predictedX - canvas.width / 2));
+            cam.y = Math.max(0, Math.min(WORLD_H - canvas.height, predictedY - canvas.height / 2));
+        }
+
+        function updateInterpolation() {
+            remoteEntities.forEach(entry => {
+                entry.renderX += (entry.x - entry.renderX) * 0.2;
+                entry.renderY += (entry.y - entry.renderY) * 0.2;
+            });
+        }
+
+        socket.on('connect', () => {
+            socket.emit('requestLeaderboard');
+        });
+
+        socket.on('globalLeaderboard', data => {
+            const leaderboardPanel = document.getElementById('globalLeaderboard');
+            leaderboardPanel.innerHTML = '<h3>All-Time Top 10</h3>' + 
+                data.map(player => `<div>${player.rank}. ${player.username}: ${player.allTimeScore} (Lv. ${player.level} - ${player.gamesPlayed} games)</div>`).join('');
+        });
+
+        socket.on('roomJoined', data => {
+            playerId = data.playerId;
+            roomId = data.roomId;
+            if (data.profile) {
+                playerProfile = data.profile;
+                playerLevel = playerProfile.level;
+                playerXp = playerProfile.xp;
+            }
+            leaderboard = data.leaderboard;
+            predictedX = Math.random() * WORLD_W;
+            predictedY = Math.random() * WORLD_H;
+            document.getElementById('lobby').style.display = 'none';
+            startCountdown();
+        });
+
+        socket.on('gameState', data => {
+            gameTimer = data.gameTimer;
+            serverCollectibles = data.collectibles;
+            serverPlayers = data.players;
+            serverBots = data.bots;
+            serverPlayers.forEach(player => {
+                if (player.id === playerId) {
+                    playerHp = player.hp;
+                    playerScore = player.score;
+                    playerXp = player.xp;
+                    playerLevel = player.level;
+                } else {
+                    if (!remoteEntities.has(player.id)) {
+                        remoteEntities.set(player.id, { renderX: player.x, renderY: player.y, username: player.username });
+                    }
+                    const entry = remoteEntities.get(player.id);
+                    entry.x = player.x;
+                    entry.y = player.y;
+                }
+            });
+        });
+
+        socket.on('playerDied', data => {
+            if (data.playerId === playerId) {
+                gameState = 'dead';
+                document.getElementById('deathScreen').style.display = 'flex';
+                document.getElementById('finalScoreText').innerText = `Final Score: ${playerScore}`;
+                document.getElementById('bestScoreText').innerText = `All-Time Best: ${playerProfile.allTimeScore}`;
+            }
+        });
+
+        function startCountdown() {
+            gameState = 'countdown';
+            const countdownDiv = document.getElementById('countdown');
+            countdownDiv.style.display = 'flex';
+            const countdownText = document.getElementById('countdownText');
+            let countdownStep = 3;
+            countdownText.innerHTML = countdownStep;
+            const intervalId = setInterval(() => {
+                countdownStep--;
+                if (countdownStep === 2) {
+                    countdownText.innerHTML = countdownStep;
+                } else if (countdownStep === 1) {
+                    countdownText.innerHTML = countdownStep;
+                } else if (countdownStep === 0) {
+                    countdownText.innerHTML = 'GO';
+                } else if (countdownStep < 0) {
+                    clearInterval(intervalId);
+                    countdownDiv.style.display = 'none';
+                    gameState = 'playing';
+                }
+            }, 1000);
+        }
+
+        function updatePrediction() {
+            if (gameState !== 'playing') return;
+
+            let dx = 0, dy = 0;
+            if (keys['w'] || keys['ArrowUp']) dy -= SPEED;
+            if (keys['s'] || keys['ArrowDown']) dy += SPEED;
+            if (keys['a'] || keys['ArrowLeft']) dx -= SPEED;
+            if (keys['d'] || keys['ArrowRight']) dx += SPEED;
+
+            predictedX = Math.max(0, Math.min(WORLD_W, predictedX + dx));
+            predictedY = Math.max(0, Math.min(WORLD_H, predictedY + dy));
+
+            if (dx !== 0 || dy !== 0 || mouse.down || mouse.rightDown) {
+                pingStart = Date.now();
+                socket.emit('playerInput', { dx, dy, action: mouse.down ? 'attack' : (mouse.rightDown ? 'special' : null) });
+                socket.emit('ping');
+            }
+        }
+
+        function drawWorld() {
+            ctx.save();
+            ctx.translate(-cam.x, -cam.y);
+
+            ctx.strokeStyle = '#1a1a2e';
+            ctx.lineWidth = 1;
+
+            for (let x = 0; x < WORLD_W; x += 100) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, WORLD_H);
+                ctx.stroke();
+            }
+
+            for (let y = 0; y < WORLD_H; y += 100) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(WORLD_W, y);
+                ctx.stroke();
+            }
+
+            serverCollectibles.forEach(c => {
+                ctx.fillStyle = c.type === 'health' ? 'red' : 'yellow';
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, 10, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = 'white';
+                ctx.font = '10px Cinzel';
+                ctx.fillText(c.type.charAt(0).toUpperCase(), c.x - 4, c.y + 4);
+            });
+
+            serverBots.forEach(b => {
+                ctx.fillStyle = 'orange';
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, 20, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            remoteEntities.forEach(entry => {
+                ctx.fillStyle = 'cornflowerblue';
+                ctx.beginPath();
+                ctx.arc(entry.renderX, entry.renderY, 22, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            ctx.fillStyle = 'gold';
+            ctx.beginPath();
+            ctx.arc(predictedX, predictedY, 24, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function drawHUD() {
+            const healthBar = document.getElementById('health').firstElementChild;
+            healthBar.style.width = (playerHp / playerMaxHp) * 200 + 'px';
+
+            const xpBar = document.getElementById('xp').firstElementChild;
+            xpBar.style.width = (playerXp / 500) * 200 + 'px';
+
+            document.getElementById('timer').innerText = `Time Left: ${Math.floor(gameTimer / 20)}`;
+            document.getElementById('ping').innerText = `Ping: ${ping} ms`;
+        }
+
+        function gameLoop() {
+            requestAnimationFrame(gameLoop);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (gameState === 'playing') {
+                updateCamera();
+                updatePrediction();
+                updateInterpolation();
+                updateParticles();
+                drawWorld();
+                drawParticles(cam);
+                drawHUD();
+            }
+        }
+
+        const keys = {};
+        const mouse = { x: 0, y: 0, down: false, rightDown: false };
+
+        window.addEventListener('keydown', event => {
+            keys[event.key] = true;
+        });
+
+        window.addEventListener('keyup', event => {
+            keys[event.key] = false;
+        });
+
+        window.addEventListener('mousemove', event => {
+            mouse.x = event.clientX;
+            mouse.y = event.clientY;
+        });
+
+        window.addEventListener('mousedown', event => {
+            if (event.button === 0) mouse.down = true;
+            if (event.button === 2) mouse.rightDown = true;
+        });
+
+        window.addEventListener('mouseup', event => {
+            if (event.button === 0) mouse.down = false;
+            if (event.button === 2) mouse.rightDown = false;
+        });
+
+        document.getElementById('joinButton').addEventListener('click', () => {
+            const username = document.getElementById('nameInput').value;
+            if (username) {
+                socket.emit('joinRoom', username);
+                gameState = 'matchmaking';
+            }
+        });
+
+        document.getElementById('respawnBtn').addEventListener('click', () => {
+            socket.emit('respawn');
+            document.getElementById('deathScreen').style.display = 'none';
+            gameState = 'matchmaking';
+        });
+
+        document.getElementById('lobbyBtn').addEventListener('click', () => {
+            document.getElementById('deathScreen').style.display = 'none';
+            document.getElementById('lobby').style.display = 'block';
+            gameState = 'lobby';
+            socket.emit('requestLeaderboard');
+        });
+
+        socket.on('pong', () => {
+            ping = Date.now() - pingStart;
+        });
+
+        gameLoop();
+    </script>
+</body>
+</html>
